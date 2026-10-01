@@ -19,8 +19,8 @@ logger = logging.getLogger("uvicorn.error")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-model_path = os.path.join(BASE_DIR, "..", "BiGRU_Model.keras")
-tokenizer_path = os.path.join(BASE_DIR, "..", "tokenizer.pkl")
+model_path = os.path.join(BASE_DIR, "BiGRU_Model.keras")
+tokenizer_path = os.path.join(BASE_DIR, "tokenizer.pkl")
 
 max_seq_len = 50
 
