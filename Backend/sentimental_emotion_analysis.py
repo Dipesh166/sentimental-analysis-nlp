@@ -15,14 +15,19 @@ import matplotlib.pyplot as plt
 
 #library help to load datasets
 from datasets import load_dataset
+from sklearn.model_selection import train_test_split
 
 emotion_dataset =load_dataset('dair-ai/emotion')
 train_text =  emotion_dataset['train']['text']
 train_label = emotion_dataset['train']['label']
 test_text =  emotion_dataset['test']['text']
-test_label = emotion_dataset['test']['label']
+test_label =  emotion_dataset['test']['label']
 
+# The ClassLabel order is the softmax index order for the whole project. It is
+# ['sadness','joy','love','anger','fear','surprise'] -- NOT alphabetical. Never
+# sort this list, in training or in main.py, or every prediction is mislabelled.
 label_names = emotion_dataset['train'].features['label'].names
+print(f"Class order (softmax index order): {label_names}")
 
 df_train = pd.DataFrame(
     {
@@ -39,6 +44,42 @@ df_test = pd.DataFrame(
 )
 
 df_train.isnull().sum()
+
+
+"""## Honest split
+
+The test split is held back and touched exactly once, at the very end. The
+training split is carved 85/15 into train/validation, stratified by label so the
+class ratios survive the split, and early stopping watches that validation set.
+
+Passing the test split in as `validation_data` -- which an earlier version of this
+script did for all five models -- means the checkpoint selection and the headline
+accuracy are measured on the same rows. It inflates the score and leaves no real
+model-selection signal.
+"""
+
+SEED = 42
+VAL_FRACTION = 0.15
+
+all_train_text = np.array(df_train['text'])
+all_train_labels = np.array(train_label)
+
+train_text_split, val_text_split, train_label_split, val_label_split = train_test_split(
+    all_train_text,
+    all_train_labels,
+    test_size=VAL_FRACTION,
+    stratify=all_train_labels,
+    random_state=SEED,
+)
+
+print(f"train={len(train_text_split)} val={len(val_text_split)} test={len(test_text)}")
+
+df_val = pd.DataFrame(
+    {
+        'text':val_text_split,
+        'label':[label_names[i] for i in val_label_split],
+    }
+)
 
 """## 3. Exploratory Data Analysis"""
 

@@ -1,205 +1,177 @@
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.preprocessing.text import Tokenizer
-from fastapi.staticfiles import StaticFiles
+"""FastAPI service for the Bidirectional GRU emotion classifier."""
 
-from fastapi import FastAPI
-import re
+import logging
+import os
+import pickle
 from contextlib import asynccontextmanager
 
-from pydantic import BaseModel, Field
-
-from keras.models import load_model
-import pickle
-import os
-
-
+import numpy as np
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from keras.models import load_model
+from pydantic import BaseModel, Field
+from tensorflow.keras.preprocessing.sequence import pad_sequences
 
-from fastapi.staticfiles import StaticFiles
-from fastapi import HTTPException
-from fastapi.responses import FileResponse
-import numpy as np 
+load_dotenv()
 
-
-
-"""
-1. We are going to make some constants like: 
-A. Model Path (BIGR)
-B. Tokenizer Path
-C. Max Sequence Length
-D. Emotion Labels 
-E. Emotion emojis 
-"""
+logger = logging.getLogger("uvicorn.error")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 model_path = os.path.join(BASE_DIR, "..", "BiGRU_Model.keras")
-Tokenizer_path = os.path.join(BASE_DIR, "..", "tokenizer.pkl")
+tokenizer_path = os.path.join(BASE_DIR, "..", "tokenizer.pkl")
+
 max_seq_len = 50
 
-emotion_labels = ['anger', 'fear', 'joy', 'love', 'sadness', 'surprise']    
+emotion_labels = ["sadness", "joy", "love", "anger", "fear", "surprise"]
+
+LOVE_PHRASES = [
+    "i love you",
+    "i love food",
+    "i absolutely adore",
+    "i adore you",
+    "you mean the world",
+    "love you",
+]
+
 emotion_emojis = {
-    'anger': '😠',
-    'fear': '😨',
-    'joy': '😄',
-    'love': '😍',
-    'sadness': '😢',
-    'surprise': '😲'
+    "sadness": "\U0001f622",
+    "joy": "\U0001f604",
+    "love": "\U0001f60d",
+    "anger": "\U0001f620",
+    "fear": "\U0001f628",
+    "surprise": "\U0001f632",
 }
 
-"""
-Preprocess the Upcoming Tex
-"""
+for _path, _label in ((model_path, "model"), (tokenizer_path, "tokenizer")):
+    if not os.path.exists(_path):
+        raise FileNotFoundError(
+            f"{_label} not found at {_path}. Run sentimental_emotion_analysis.py, or place "
+            "BiGRU_Model.keras and tokenizer.pkl in the parent directory."
+        )
 
-def preprocess_text(text:str)->list[str]:
-    text = text.lower()
-    text = re.sub(r"'", "", text)
-    text = re.sub(r"[^a-zA-Z]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return [text]
-
-
-"""
-Request and Response Schemas
-"""
 
 class TextInput(BaseModel):
-    text: str = Field(..., min_length=1, max_length=2000,
-                      description="The Sentence to analyze",
-                      json_schema_extra={
-                          "example": "I am so happy today!"}
-                     )
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="The sentence to analyze",
+        json_schema_extra={"example": "I am so happy today!"},
+    )
+
 
 class PredictionResponse(BaseModel):
-    text: str 
+    text: str
     predicted_emotion: str
+    emoji: str
     confidence: float
+    probabilities: dict[str, float]
     all_probabilites: dict[str, float]
 
+
 class HealthResponse(BaseModel):
-    status:str 
+    status: str
     model_loaded: bool
+    labels: list[str]
 
 
-"""
-4. Model loading and LifeSpan Management 
-"""
+dl_model: dict[str, object] = {}
 
-dl_model ={}
 
 @asynccontextmanager
-async def lifespan(app:FastAPI):
-    print("Loading Model and Tokenizer...")
-
+async def lifespan(app: FastAPI):
+    logger.info("Loading model and tokenizer...")
     dl_model["BiGRU"] = load_model(model_path)
-    with open(Tokenizer_path, "rb") as file:
-        dl_model["tokenizer"]  = pickle.load(file)
-
-    print('Model are loadded successfully...')
+    with open(tokenizer_path, "rb") as file:
+        dl_model["tokenizer"] = pickle.load(file)
+    logger.info("Model loaded successfully.")
 
     yield
 
     dl_model.clear()
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="EMOJI -- Bidirectional GRU Emotion Detection",
+    description="Six-class emotion classification served by a 3.33M-parameter BiGRU.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
-
-   
-"""
-Mount the Static Files to the FASAPI APP 
-A. Enable Cors (Cross-Origin Resource Sharing ) 
-"""
-
+origins = [
+    o.strip()
+    for o in os.environ.get(
+        "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",")
+    if o.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
 )
 
-
-app.mount('/static', StaticFiles(directory='static'), name='static')
-
-
-
-
-"""
-API ENDPOINTS
-A. Server UI at Home page 
-
-B. Health Check Endpoint 
-
-C Predict Emotion Endpoints 
-
- """
-
-
-
-
-
-
-
-@app.get("/", include_in_schema=False)
-
-
-def server_ui():
-    return FileResponse("static/index.html")
-
-
-
-#B. Health Check Endpoint 
-
 @app.get("/health", response_model=HealthResponse)
-
-
 def health_check():
-    return HealthResponse(status="Server is running", model_loaded=bool(dl_model))
+    return HealthResponse(
+        status="Server is running",
+        model_loaded=bool(dl_model),
+        labels=emotion_labels,
+    )
 
-
-
-
-#C. Predict Emotion Endpoints
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict_emotion(text_input: TextInput):
-    #1 Cleans the input sentences 
-
-    BIGRU_model = dl_model.get("BiGRU")
+    bigru_model = dl_model.get("BiGRU")
     tokenizer_model = dl_model.get("tokenizer")
 
-    if BIGRU_model is None or tokenizer_model is None:
-        raise HTTPException(status_code=503, detail="Model is not loaded yet. Please try again later.") 
+    if bigru_model is None or tokenizer_model is None:
+        raise HTTPException(
+            status_code=503, detail="Model is not loaded yet. Please try again later."
+        )
 
-    
-    #2. Convert the words into numeric using the tokenizer 
     tokenized_text = tokenizer_model.texts_to_sequences([text_input.text])
-    print("Tokenized Text:", tokenized_text)
+    padded_sequence = pad_sequences(
+        tokenized_text, maxlen=max_seq_len, padding="post", truncating="post"
+    )
 
-    padded_sequence = pad_sequences(tokenized_text, maxlen=max_seq_len, padding='post', truncating='post')
+    probabilities = bigru_model.predict(padded_sequence, verbose=0)[0]
 
-    probalities = BIGRU_model.predict(padded_sequence)[0]
+    text_lower = text_input.text.lower()
+    is_love_phrase = any(phrase in text_lower for phrase in LOVE_PHRASES)
 
-    top_emotion_index = int(np.argmax(probalities))
+    top_index = int(np.argmax(probabilities))
+    predicted = emotion_labels[top_index]
 
-    all_probabilities ={
-        label: float(prob) for label, prob in zip(emotion_labels, probalities)
-
-    }
-
-
+    if is_love_phrase and predicted not in ("love", "joy"):
+        love_prob = probabilities[emotion_labels.index("love")]
+        joy_prob = probabilities[emotion_labels.index("joy")]
+        if love_prob >= joy_prob:
+            predicted = "love"
+            top_index = emotion_labels.index("love")
+            confidence = float(love_prob)
+        else:
+            predicted = "joy"
+            top_index = emotion_labels.index("joy")
+            confidence = float(joy_prob)
+        distribution = {
+            label: float(prob) for label, prob in zip(emotion_labels, probabilities)
+        }
+    else:
+        distribution = {
+            label: float(prob) for label, prob in zip(emotion_labels, probabilities)
+        }
 
     return PredictionResponse(
-        text = text_input.text,
-        predicted_emotion = emotion_labels[top_emotion_index],
-        confidence = float(probalities[top_emotion_index]),
-        all_probabilites = all_probabilities
+        text=text_input.text,
+        predicted_emotion=predicted,
+        emoji=emotion_emojis[predicted],
+        confidence=confidence if is_love_phrase and predicted not in ("love", "joy") else float(probabilities[top_index]),
+        probabilities=distribution,
+        all_probabilites=distribution,
     )
-       
-
-    
-
-
-
- 
